@@ -1,0 +1,1142 @@
+#!/bin/bash
+#
+# ABSOLUTELY NO WARRANTY WITH THIS PACKAGE. USE IT AT YOUR OWN RISK.
+#
+#
+# Tune network filesystem (CIFS/NFS/WEB) performance on a 10Gb network.
+#
+# usage: tune10gb [options]
+#        test:
+#        -a       run all performance tests (all=dsk+web+nfs+cifs)
+#        -t type  run performance test type(s) from perf typelist
+#        -n num   run performance test(s) N times (default: $NumPerfTest)
+#        -s size  data file size in [KMG]B (default: $DataSize)
+#        -b size  block size in [KMG]B (default: $BlockSize)
+#
+#        setup:
+#        -G       get OS + config settings
+#        -S       set OS + config settings
+#        -R       reset OS + config settings
+#
+#        misc:
+#        -l       list config file (file://$CfgFile)
+#        -e       edit config file
+#        -c       cleanup test files
+#
+#        -v        verbose
+#
+#
+# Copyright (c) 2018-2020  tune10gb  Iain Lea  code@lightaffaire.com
+#
+#   This program is free software; you can redistribute it and/or 
+#   modify it under the terms of the GNU General Public License as
+#   published by the Free Software Foundation; either version 2 of
+#   the License, or (at your option) any later version.
+# 
+#   This program is distributed in the hope that it will be useful, 
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  
+#   See the GNU General Public License for more details.
+# 
+#   You should have received a copy of the GNU GPL along with this
+#   program; if not, write to the Free Software Foundation, Inc.,
+#
+#
+# References:
+#
+#
+# Requirements:
+#
+#
+# Changelog:
+# 2.00 2020.03.26
+# - added auto-discovery of config variables and write to ~/.$ScriptName file
+# 1.90 2020.03.22
+# - added FS exists checks for nfs tcp, nfs udp and cifs for -t type
+# - added output AVG I/O stats if -n >1
+# 1.80 2020.03.21
+# - added -a run all tests and -t "nfscat cifscat" test type list support
+# - added -c cleanup [fallocate_|diskwrite_] test files option
+# 1.70 2020.03.18
+# - added full support for R/W of ~/.ScriptName
+# 1.60 2020.03.18
+# - added -B block size in [KMG]B (default: $BlockSize) option
+# - added -N run performance test(s) N times (default: $NumPerfTest) option
+# - changed RunPerfTest() to use RunPerfSubTest()
+# 1.50 2020.03.17
+# - added harness code to test CIFS filesystems
+# 1.40 2020.03.15
+# - added -S data file size in [KMG]B (default: $DataSize) option
+# - fixed -t dsk  hdparm to also use RUN: and RAM: lines
+# - fixed -t/T output to be standardized RUN: and RAN: lines
+# 1.30 2019.06.26
+# - added -l list config file option
+# - added -e edit config file option
+# - added all|read|write types [dsk|dskrd|dskwr|web|nfs|nfsrd|nfswr]
+# - added hdparm -t /dev/$PART to dsk test section
+# 1.20 2019.06.25
+# - added -t run all performance tests option
+# - added -T run performance type test option
+# - added smartctl --all $Disk
+# 1.10 2019.03.03
+# - added support for ~/.$ScriptName
+# 1.00 2018.12.28
+# - initial release
+#
+#
+# Todo:
+# - 
+
+StandaloneMode=1
+if [ "$StandaloneMode" ]; then
+	ScriptName=`basename $0`
+	ScriptAuthor="Iain Lea"
+	ScriptEmail="code@lightaffaire.com"
+	ScriptUrl="https://lightaffaire.com/code"
+	CalYear=`date +%Y`
+	ScriptCopyright="Copyright (c) 2018-$CalYear  $ScriptAuthor ($ScriptEmail)"
+	TmpDir="/tmp"
+
+ExitWithHelp()
+{
+	Msg=$1
+
+	echo "$Msg"
+	echo 
+	Help "$Msg"
+}
+
+ExitWithoutHelp()
+{
+	Msg=$1
+	DontPad=$2
+	
+	[ ! "$DontPad" ] && echo
+	echo "$Msg"
+
+	exit 1
+}
+else
+	FuncLibFile="/imgs/etc/corelib.sh"
+	if [ ! -f "$FuncLibFile" ]; then
+		echo "Error: $FuncLibFile - file not found. Check pixtools installation!"
+		exit 0
+	fi
+	. "$FuncLibFile"
+fi
+
+ScriptVersion="v2.00"
+#
+CfgFile="$HOME/.$ScriptName"
+InterfaceListFile="$TmpDir/$ScriptName.interfacelist.$$"
+PartNameListFile="$TmpDir/$ScriptName.partnamelist.$$"
+NfsTcpListFile="$TmpDir/$ScriptName.nfstcplist.$$"
+NfsUdpListFile="$TmpDir/$ScriptName.nfsudplist.$$"
+CifsListFile="$TmpDir/$ScriptName.cifslist.$$"
+#
+ListCfgFile=
+EditCfgFile=
+GetSettings=
+SetSettings=
+ResetSettings=
+PerfTestList=
+UserPerfTestList=
+CleanupTestFiles=
+NumPerfTest=1
+#
+# SetCfgDefaults()
+Interface=
+PartName=
+OutDir=
+InpUrl=
+NfsTcpMountPoint=
+NfsTcpBaseDir=
+NfsUdpMountPoint=
+NfsUdpBaseDir=
+CifsMountPoint=
+CifsBaseDir=
+BlockSize=
+DataSize=
+#
+RunDskTest=
+RunDskGetTest=
+RunDskCatTest=
+RunDskPutTest=
+RunDskMixTest=
+RunWebTest=
+RunWebCatTest=
+RunWebGetTest=
+RunNfsTest=
+RunNfsTcpTest=
+RunNfsTcpCatTest=
+RunNfsTcpGetTest=
+RunNfsTcpPutTest=
+RunNfsTcpMixTest=
+RunNfsUdpTest=
+RunNfsUdpCatTest=
+RunNfsUdpGetTest=
+RunNfsUdpPutTest=
+RunNfsUdpMixTest=
+RunCifsTest=
+RunCifsCatTest=
+RunCifsGetTest=
+RunCifsPutTest=
+RunCifsMixTest=
+
+
+Help()
+{
+	ErrMsg="$1"
+
+	if [ ! -e "$CfgFile" ]; then
+		CreateCfgFile
+		CreatedCfgFile=1
+	fi
+	source "$CfgFile"
+
+	cat <<HELP
+$ScriptName $ScriptVersion  URL: $ScriptUrl
+
+$ScriptCopyright
+
+Tune network filesystem (CIFS/NFS/WEB) performance on a 10Gb network.
+
+Usage: $ScriptName [options]
+       test:
+       -a       run all performance tests (all=dsk+web+nfs+cifs)
+       -t type  run performance test type(s) from perf typelist
+       -n num   run performance test(s) N times (default: $NumPerfTest)
+       -s size  data file size in [KMG]B (default: $DataSize)
+       -b size  block size in [KMG]B (default: $BlockSize)
+
+       setup:
+       -G       get OS + config settings
+       -S       set OS + config settings
+       -R       reset OS + config settings
+
+       misc:
+       -l       list config file (file://$CfgFile)
+       -e       edit config file
+       -c       cleanup test files
+
+       -v       verbose
+
+Performance test type list (-t option):
+[all|
+dsk|web|nfs|cifs|
+dskcat|dskget|dskput|dskmix|
+webcat|webget|
+nfstcp|nfstcpcat|nfstcpget|nfstcpput|nfstcpmix|
+nfsudp|nfsudpcat|nfsudpget|nfsudpput|nfsudpmix|
+cifscat|cifsget|cifsput|cifsmix]
+
+Examples:
+
+$ $ScriptName -a -s 20G
+
+$ $ScriptName -t nfstcp -t cifs -n 5
+
+HELP
+	[ "$ErrMsg" ] && echo $ErrMsg
+
+	if [ "$CreatedCfgFile" ]; then
+		echo "Config file (-e/-l option):"
+		echo
+		ListCfgFile
+	fi
+	
+	exit 0
+}
+
+CreateCfgFile()
+{
+	# defaults
+	ifconfig -a | egrep -i ": .*UP,.*RUNNING,.*mtu.*9000" >$InterfaceListFile
+	NumInterface=`cat $InterfaceListFile | wc -l`
+	[ $NumInterface -eq 1 ] && Interface=`cat $InterfaceListFile | cut -d : -f 1`
+	ifconfig -a | egrep -i ": .*UP,.*RUNNING,.*mtu.*(1500|9000)" >$InterfaceListFile
+	#
+	fdisk -l | egrep -i "Disk /dev" | sed -e "s/Disk //" >$PartNameListFile
+	NumPartName=`cat $PartNameListFile | wc -l`
+	[ $NumPartName -eq 1 ] && PartName=`cat $PartNameListFile | cut -d : -f 1`
+	#
+	#InpUrl="http://filer.home.lightaffaire.com/"
+	InpUrl="http://www.yoursite.com/"
+	#
+	OutDir="/"
+	#
+	egrep -v "^#" /etc/fstab | egrep "\snfs\s.*[\s,]tcp[\s,]" | sed -e "s#  \+#  #g; s# \+#  #g;" | sort >$NfsTcpListFile
+	NumNfsTcp=`cat $NfsTcpListFile | wc -l`
+	[ $NumNfsTcp -eq 1 ] && NfsTcpMountPoint=`cat $NfsTcpListFile | sed -e "s/  /,/g" | cut -d , -f 2`
+	[ "$NfsTcpMountPoint" ] && NfsTcpBaseDir=$OutDir
+	#
+	egrep -v "^#" /etc/fstab | egrep "\snfs\s.*[\s,]udp[\s,]" | sed -e "s#  \+#  #g; s# \+#  #g;" | sort >$NfsUdpListFile
+	NumNfsUdp=`cat $NfsUdpListFile | wc -l`
+	[ $NumNfsUdp -eq 1 ] && NfsUdpMountPoint=`cat $NfsUdpListFile | sed -e "s/  /,/g" | cut -d , -f 2`
+	[ "$NfsUdpMountPoint" ] && NfsUdpBaseDir=$OutDir
+	#
+	egrep -v "^#" /etc/fstab | egrep "\scifs\s" | sed -e "s#  \+#  #g; s# \+#  #g;" | sort >$CifsListFile
+	NumCifs=`cat $CifsListFile | wc -l`
+	[ $NumCifs -eq 1 ] && CifsMountPoint=`cat $CifsListFile | sed -e "s/  /,/g" | cut -d , -f 2`
+	[ "$CifsMountPoint" ] && CifsBaseDir=$OutDir
+	#
+	BlockSize="64KB"
+	DataSize="10GB"
+
+	cat <<CONFIG >$CfgFile
+# auto-generated: `date`
+#
+# edit to match your systems setup:
+
+# 1. network interface
+#
+%INTERFACELIST%
+#
+Interface="$Interface"
+
+# 2. local disk partition
+#
+%PARTNAMELIST%
+#
+PartName="$PartName"
+OutDir="$OutDir"
+
+# 3. web url for -t [web|webcat|webget]
+#
+# $InpUrl
+#
+InpUrl=
+
+# 4. nfs tcp mount point + base dir
+#
+%NFSTCPLIST%
+#
+NfsTcpMountPoint="$NfsTcpMountPoint"
+NfsTcpBaseDir="$NfsTcpBaseDir"
+
+# 5. nfs udp mount point + base dir
+#
+%NFSUDPLIST%
+#
+NfsUdpMountPoint="$NfsUdpMountPoint"
+NfsUdpBaseDir="$NfsUdpBaseDir"
+
+# 6. cifs mount point + base dir
+#
+%CIFSLIST%
+#
+CifsMountPoint="$CifsMountPoint"
+CifsBaseDir="$CifsBaseDir"
+
+# 7. value for dd bs=
+#
+BlockSize="$BlockSize"
+
+# 8. data file size
+#
+DataSize="$DataSize"
+CONFIG
+
+sed -i "s#=\"\"#=#g" $CfgFile
+
+if [ $NumInterface -ge 1 ]; then
+	sed -i "s#^#\# #g" $InterfaceListFile
+	sed -i "/%INTERFACELIST%/r$InterfaceListFile" $CfgFile
+fi
+sed -i "/%INTERFACELIST%/d" $CfgFile
+
+if [ $NumPartName -ge 1 ]; then
+	sed -i "s#^#\# #g" $PartNameListFile
+	sed -i "/%PARTNAMELIST%/r$PartNameListFile" $CfgFile
+fi
+sed -i "/%PARTNAMELIST%/d" $CfgFile
+
+if [ $NumNfsTcp -ge 1 ]; then
+	sed -i "s#^#\# #g" $NfsTcpListFile
+	sed -i "/%NFSTCPLIST%/r$NfsTcpListFile" $CfgFile
+fi
+sed -i "/%NFSTCPLIST%/d" $CfgFile
+
+if [ $NumNfsUdp -ge 1 ]; then
+	sed -i "s#^#\# #g" $NfsUdpListFile
+	sed -i "/%NFSUDPLIST%/r$NfsUdpListFile" $CfgFile
+fi
+sed -i "/%NFSUDPLIST%/d" $CfgFile
+
+if [ $NumNfsUdp -ge 1 ]; then
+	sed -i "s#^#\# #g" $CifsListFile
+	sed -i "/%CIFSLIST%/r$CifsListFile" $CfgFile
+fi
+sed -i "/%CIFSLIST%/d" $CfgFile
+
+[ -e "$InterfaceListFile" ] && rm -f "$InterfaceListFile"
+[ -e "$PartNameListFile" ] && rm -f "$PartNameListFile"
+[ -e "$NfsTcpListFile" ] && rm -f "$NfsTcpListFile"
+[ -e "$NfsUdpListFile" ] && rm -f "$NfsUdpListFile"
+[ -e "$CifsListFile" ] && rm -f "$CifsListFile"
+}
+
+ListCfgFile()
+{
+	echo "Interface.......: $Interface"
+	echo "                :"
+	echo "PartName........: $PartName"
+	echo "OutDir..........: $OutDir"
+	echo "                :"
+	echo "InpUrl..........: $InpUrl"
+	echo "                :"
+	echo "NfsTcpMountPoint: $NfsTcpMountPoint"
+	echo "NfsTcpBaseDir...: $NfsTcpBaseDir"
+	echo "                :"
+	echo "NfsUdpMountPoint: $NfsUdpMountPoint"
+	echo "NfsUdpBaseDir...: $NfsUdpBaseDir"
+	echo "                :"
+	echo "CifsMountPoint..: $CifsMountPoint"
+	echo "CifsBaseDir.....: $CifsBaseDir"
+	echo "                :"
+	echo "DataSize........: $DataSize"
+	echo "BlockSize.......: $BlockSize"
+	echo
+}
+
+ListSysctl()
+{
+	echo "GET: sysctl"
+	sysctl net.ipv4.tcp_window_scaling
+	sysctl net.core.rmem_max
+	sysctl net.core.wmem_max
+	sysctl net.ipv4.tcp_rmem
+	sysctl net.ipv4.tcp_wmem
+	sysctl net.core.netdev_max_backlog
+	sysctl net.ipv4.tcp_moderate_rcvbuf
+	sysctl net.ipv4.tcp_no_metrics_save
+	sysctl net.ipv4.tcp_congestion_control
+	sysctl net.ipv4.tcp_mtu_probing
+	sysctl net.ipv4.tcp_timestamps 
+	sysctl net.ipv4.tcp_sack
+
+	echo
+	echo "GET: /sys/block/`basename $PartName`/queue/scheduler"
+	cat /sys/block/`basename $PartName`/queue/scheduler
+
+	echo
+	echo "GET: ethtool -g $Interface"
+	ethtool -g $Interface |& egrep -v "Pre-set|Mini|Jumbo|unmodified" |& tail -n 3
+}
+
+GetSettings()
+{
+	echo "GET: uname -a"
+	uname -a
+	echo
+	echo "GET: uptime"
+	uptime
+	echo
+	echo "GET: free"
+	free
+	echo
+	echo "GET: egrep (nfs|cifs) /etc/fstab"
+	egrep "(nfs|cifs)" /etc/fstab | egrep -v "^#"
+	echo
+	echo "GET: ifconfig $Interface"
+	ifconfig $Interface
+	echo
+	echo "GET: ethtool $Interface"
+	ethtool $Interface
+	ethtool -g $Interface
+	echo
+	echo "GET: lscpu"
+	lscpu
+	echo
+	echo "GET: smartctl"
+	smartctl --all $PartName
+	echo
+
+	ListSysctl
+}
+
+ResetSettings()
+{
+	echo "RESET: sysctl"
+	sysctl -w net.ipv4.tcp_window_scaling=1
+	sysctl -w net.core.rmem_max=212992
+	sysctl -w net.core.wmem_max=212992
+	sysctl -w net.ipv4.tcp_rmem="4096 87380 6291456"
+	sysctl -w net.ipv4.tcp_wmem="4096 16384 4194304"
+	sysctl -w net.core.netdev_max_backlog=1000
+	sysctl -w net.ipv4.tcp_moderate_rcvbuf=1
+	sysctl -w net.ipv4.tcp_no_metrics_save=0
+	sysctl -w net.ipv4.tcp_congestion_control=cubic
+	sysctl -w net.ipv4.tcp_mtu_probing=0
+	sysctl -w net.ipv4.tcp_timestamps=1
+	sysctl -w net.ipv4.tcp_sack=1
+
+	echo
+	echo "RESET: /sys/block/$PartName/queue/scheduler"
+	echo deadqueue >/sys/block/$PartName/queue/scheduler
+	cat /sys/block/$PartName/queue/scheduler
+	echo
+	
+	echo
+	echo "RESET: ethtool -G $Interface rx 512 tx 512"
+	ethtool -G $Interface rx 512 tx 512
+	ethtool -g $Interface |& egrep -v "Pre-set|Mini|Jumbo|unmodified" |& tail -n 3
+	echo
+
+	GetSettings
+}
+
+SetSettings()
+{
+	echo "SET: sysctl"
+	# TCP window scaling 
+	sysctl -w net.ipv4.tcp_window_scaling=1
+	# Maximum receive socket buffer size
+	sysctl -w net.core.rmem_max=134217728 
+	# Maximum send socket buffer size
+	sysctl -w net.core.wmem_max=134217728 
+	# Minimum, initial and max TCP Receive buffer size in Bytes
+	sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728"
+	# Minimum, initial and max buffer space allocated
+	sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728"
+	# Maximum number of packets queued on the input side
+	sysctl -w net.core.netdev_max_backlog=300000 
+	# Auto tuning
+	sysctl -w net.ipv4.tcp_moderate_rcvbuf=1
+	# Don't cache ssthresh from previous connection
+	sysctl -w net.ipv4.tcp_no_metrics_save=1
+	# The Hamilton TCP (HighSpeed-TCP) algorithm is a packet loss based congestion control and is more aggressive pushing up to max bandwidth (total BDP) and favors hosts with lower TTL / VARTTL.
+	sysctl -w net.ipv4.tcp_congestion_control=htcp
+	# If you are using jumbo frames set this to avoid MTU black holes.
+	sysctl -w net.ipv4.tcp_mtu_probing=1
+
+	sysctl -w net.ipv4.tcp_timestamps=0
+	sysctl -w net.ipv4.tcp_sack=1
+
+	echo
+	echo "SET: /sys/block/$PartName/queue/scheduler"
+	echo mq-deadline >/sys/block/$PartName/queue/scheduler
+	cat /sys/block/$PartName/queue/scheduler
+
+	echo
+	echo "SET: ethtool -G $Interface rx 4096 tx 4096"
+	ethtool -G $Interface rx 4096 tx 4096
+	ethtool -g $Interface |& egrep -v "Pre-set|Mini|Jumbo|unmodified" |& tail -n 3
+}
+
+SetRunPerfTestDefaults()
+{
+	SetPerfTextDefault="$1"
+
+	RunDskTest=$SetPerfTextDefault
+	RunDskCatTest=$SetPerfTextDefault
+	RunDskGetTest=$SetPerfTextDefault
+	RunDskPutTest=$SetPerfTextDefault
+	RunDskMixTest=$SetPerfTextDefault
+	RunWebTest=$SetPerfTextDefault
+	RunWebCatTest=$SetPerfTextDefault
+	RunWebGetTest=$SetPerfTextDefault
+	RunNfsTest=$SetPerfTextDefault
+	RunNfsTcpTest=$SetPerfTextDefault
+	RunNfsTcpCatTest=$SetPerfTextDefault
+	RunNfsTcpGetTest=$SetPerfTextDefault
+	RunNfsTcpPutTest=$SetPerfTextDefault
+	RunNfsTcpMixTest=$SetPerfTextDefault
+	RunNfsUdpTest=$SetPerfTextDefault
+	RunNfsUdpCatTest=$SetPerfTextDefault
+	RunNfsUdpGetTest=$SetPerfTextDefault
+	RunNfsUdpPutTest=$SetPerfTextDefault
+	RunNfsUdpMixTest=$SetPerfTextDefault
+	RunCifsTest=$SetPerfTextDefault
+	RunCifsCatTest=$SetPerfTextDefault
+	RunCifsGetTest=$SetPerfTextDefault
+	RunCifsPutTest=$SetPerfTextDefault
+	RunCifsMixTest=$SetPerfTextDefault
+}
+
+GenTestFileName()
+{
+	TestFileName="$1"
+	TestFileSize="$2"
+
+	TestFileSizeNum=`echo "$TestFileSize" | sed -e 's/GB//; s/MB//; s/KB//'`
+	TestFileSizeExt=`echo "$TestFileSize" | sed -e 's/^[0-9]*//'`
+
+	#echo "GenTestFileName: TestFileName=[$TestFileName] TestFileSize=[$TestFileSize] TestFileSizeNum=[$TestFileSizeNum] TestFileSizeExt=[$TestFileSizeExt]"
+
+	printf "%s%02d%s.data" "$TestFileName" "$TestFileSizeNum" "$TestFileSizeExt"
+}
+
+RunPerfTestHarness()
+{
+	DataFile=`GenTestFileName "${ScriptName}_" "$DataSize"`
+	DiskFile=`GenTestFileName "${ScriptName}_temp_" "$DataSize"`
+
+	NfsTcpInpDir="$NfsTcpMountPoint$NfsTcpBaseDir"
+	NfsUdpInpDir="$NfsUdpMountPoint$NfsUdpBaseDir"
+	CifsInpDir="$CifsMountPoint$CifsBaseDir"
+	InpUrlFile=`echo "${InpUrl}$DataFile" | sed -e "s#^http:##; s#^[/]+##; s#^#http://#"`
+	OutDirFile="$OutDir$DataFile"
+	OutTmpFile="$OutDir$DiskFile"
+	#
+	InpCatFile="/dev/zero"
+	OutCatFile="/dev/null"
+	RunFile="/tmp/$ScriptName.runfile.$$"
+	TimeCmd="time -f RAN=%es"
+
+	if echo $PerfTestList | egrep -qi "^all$"; then
+		SetRunPerfTestDefaults "1"
+	else
+		SetRunPerfTestDefaults ""
+
+		for PerfTest in `echo $PerfTestList`
+		do
+			case $PerfTest in
+				dskcat)
+					RunDskTest=1; RunDskCatTest=1;
+					shift;;
+				dskget)
+					RunDskTest=1; RunDskGetTest=1;
+					shift;;
+				dskput)
+					RunDskTest=1; RunDskPutTest=1;
+					shift;;
+				dskmix)
+					RunDskTest=1; RunDskMixTest=1;
+					shift;;
+				dsk)
+					RunDskTest=1; RunDskCatTest=1; RunDskGetTest=1;
+					RunDskPutTest=1; RunDskMixTest=1;
+					shift;;
+				webcat)
+					RunWebTest=1; RunWebCatTest=1;
+					shift;;
+				webget)
+					RunWebTest=1; RunWebGetTest=1;
+					shift;;
+				web)
+					RunWebTest=1; RunWebCatTest=1; RunWebGetTest=1;
+					shift;;
+				nfscat)
+					RunNfsTest=1; RunNfsTcpTest=1; RunNfsUdpTest=1;
+					RunNfsTcpCatTest=1; RunNfsUdpCatTest=1;
+					shift;;
+				nfsget)
+					RunNfsTest=1; RunNfsTcpTest=1; RunNfsUdpTest=1;
+					RunNfsTcpGetTest=1; RunNfsUdpGetTest=1;
+					shift;;
+				nfsput)
+					RunNfsTest=1; RunNfsTcpTest=1; RunNfsUdpTest=1;
+					RunNfsTcpPutTest=1; RunNfsUdpPutTest=1;
+					shift;;
+				nfsmix)
+					RunNfsTest=1; RunNfsTcpTest=1; RunNfsUdpTest=1;
+					RunNfsTcpMixTest=1; RunNfsUdpMixTest=1;
+					shift;;
+				nfstcpcat)
+					RunNfsTcpTest=1; RunNfsTcpCatTest=1;
+					shift;;
+				nfstcpget)
+					RunNfsTcpTest=1; RunNfsTcpGetTest=1;
+					shift;;
+				nfstcpput)
+					RunNfsTcpTest=1; RunNfsTcpPutTest=1;
+					shift;;
+				nfstcpmix)
+					RunNfsTcpTest=1; RunNfsTcpMixTest=1;
+					shift;;
+				nfstcp)
+					RunNfsTcpTest=1;
+					RunNfsTcpCatTest=1; RunNfsTcpGetTest=1;
+					RunNfsTcpPutTest=1; RunNfsTcpMixTest=1;
+					shift;;
+				nfsudpcat)
+					RunNfsUdpTest=1; RunNfsUdpCatTest=1;
+					shift;;
+				nfsudpget)
+					RunNfsUdpTest=1; RunNfsUdpGetTest=1;
+					shift;;
+				nfsudpput)
+					RunNfsUdpTest=1; RunNfsUdpPutTest=1;
+					shift;;
+				nfsudpmix)
+					RunNfsUdpTest=1; RunNfsUdpMixTest=1;
+					shift;;
+				nfsudp)
+					RunNfsUdpTest=1;
+					RunNfsUdpCatTest=1; RunNfsUdpGetTest=1;
+					RunNfsUdpPutTest=1; RunNfsUdpMixTest=1;
+					shift;;
+				nfs)
+					RunNfsTest=1; RunNfsTcpTest=1; RunNfsUdpTest=1;
+					RunNfsTcpCatTest=1; RunNfsTcpGetTest=1;
+					RunNfsTcpPutTest=1; RunNfsTcpMixTest=1;
+					RunNfsUdpCatTest=1; RunNfsUdpGetTest=1;
+					RunNfsUdpPutTest=1; RunNfsUdpMixTest=1;
+					shift;;
+				cifscat)
+					RunCifsTest=1; RunCifsCatTest=1;
+					shift;;
+				cifsget)
+					RunCifsTest=1; RunCifsGetTest=1;
+					shift;;
+				cifsput)
+					RunCifsTest=1; RunCifsPutTest=1;
+					shift;;
+				cifsmix)
+					RunCifsTest=1; RunCifsMixTest=1;
+					shift;;
+				cifs)
+					RunCifsTest=1;
+					RunCifsCatTest=1; RunCifsGetTest=1;
+					RunCifsPutTest=1; RunCifsMixTest=1;
+					shift;;
+				*)
+					ExitWithHelp "Error: -t $PerfTest - unknown test type." 1
+					shift;;
+			esac
+		done
+	fi
+
+	# now check if a mounted FS or web URL matches the protocol to be tested
+	if [ "$RunWebTest" ]; then
+		[ ! "$InpUrl" ] && ExitWithoutHelp "Error: \$InpUrl= - url must be specified. Edit \$ $ScriptName -e" 1
+	fi
+	if [ "$RunNfsTcpTest" ]; then
+		if [ "$NfsTcpMountPoint" ]; then
+			[ ! -d "$NfsTcpMountPoint" ] && ExitWithoutHelp "Error: \$NfsTcpMountPoint=$NfsTcpMountPoint - dir not found. Edit \$ $ScriptName -e" 1
+		else
+			RunNfsTcpTest=
+		fi
+	fi
+	if [ "$RunNfsUdpTest" ]; then
+		if [ "$NfsUdpMountPoint" ]; then
+			[ ! -d "$NfsUdpMountPoint" ] && ExitWithoutHelp "Error: \$NfsUdpMountPoint=$NfsUdpMountPoint - dir not found. Edit \$ $ScriptName -e" 1
+		else
+			RunNfsUdpTest=
+		fi
+	fi
+	if [ "$RunCifsTest" ]; then
+		if [ "$CifsMountPoint" ]; then
+			[ ! -d "$CifsMountPoint" ] && ExitWithoutHelp "Error: \$CifsMountPoint=$CifsMountPoint - dir not found. \$ $ScriptName -e" 1
+		else
+			RunCifsTest=
+		fi
+	fi
+
+	# check if $InpFile exists and is >0 otherwise create it
+	if [ ! -s "$OutDirFile" ]; then
+		if [ -d "$NfsTcpInpDir" ]; then
+			InpDir="$NfsTcpInpDir"
+		elif [ -d "$NfsUdpInpDir" ]; then
+			InpDir="$NfsUdpInpDir"
+		elif [ -d "$CifsInpDir" ]; then
+			InpDir="$CifsInpDir"
+		else
+			InpDir="$OutDir"
+		fi
+
+		echo "RUN: fallocate -l $DataSize $OutDirFile"
+		fallocate -l $DataSize $OutDirFile
+		cp -f $OutDirFile $InpDir
+		echo
+		[ "$Verbose" ] && (ls -l ${InpDir}${ScriptName}_*.data; echo)
+	fi
+
+	[ "$Verbose" ] && ListSysctl
+
+	[ "$Verbose" ] && printf "BEG: %s\n\n" "`uptime`"
+
+	if [ "$RunDskTest" ]; then
+ 		if [ "$RunDskCatTest" ]; then
+			SetAvgPerf
+			for NumSubTest in `seq 1 $NumPerfTest`
+			do
+				[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: dsk cat $DataSize  [$OutDirFile] > [$OutCatFile] [bs=$BlockSize]"
+				$TimeCmd /usr/bin/dd if=$OutDirFile of=$OutCatFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+				ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: dsk cat $DataSize"
+			done
+			ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: dsk cat $DataSize"
+			echo
+		fi
+ 		if [ "$RunDskGetTest" ]; then
+			SetAvgPerf
+			AvgTotalGB=0
+			for NumSubTest in `seq 1 $NumPerfTest`
+			do
+				[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: dsk rd        [hdparm -t $PartName]"
+				hdparm -t $PartName |& sed -e "s/RAN=/RAN: /" |& egrep -v "Inappropriate ioctl for device" | egrep "Timing buffered disk reads" |\
+					sed -e "s/Timing buffered disk reads://; s/ seconds/s/; s/sec/s/; s/ = /,/; s/ in  /,/; s/^ //g" > $RunFile
+
+				TotalMB=`cat $RunFile | cut -d , -f 1 | sed -e "s/MB//"`
+				RunSecs=`cat $RunFile | cut -d , -f 2`
+				Thruput=`cat $RunFile | cut -d , -f 3 | sed -e "s/\.[0-9][0-9]//"`
+				TotalGB=`echo "scale=1; ($TotalMB/1024)" | bc -l`
+
+				RunSecsNum=`echo $RunSecs | tr -d "s"`
+				ThruputNum=`echo $Thruput | cut -d " " -f 1`
+				TotalRunSecs=`echo "scale=2; ($TotalRunSecs + $RunSecsNum)" | bc -l`
+				TotalThruput=`expr $TotalThruput + $ThruputNum`
+ 				AvgTotalGB=`echo "scale=1; ($AvgTotalGB + $TotalGB)" | bc -l`
+
+				printf "RAN[$NumSubTest/$NumPerfTest]: dsk rd %3sGB  I/O: %7s @ %10s\n" "$TotalGB" "$RunSecs" "$Thruput"
+			done
+			AvgTotalGB=`echo "scale=1; ($AvgTotalGB/$NumPerfTest)" | bc -l`
+			AvgPrefixText=`printf "AVG[$NumSubTest/$NumPerfTest]: dsk rd %sGB" "$AvgTotalGB"`
+			ListAvgPerf $NumPerfTest "$AvgPrefixText"
+			echo
+		fi
+ 		if [ "$RunDskPutTest" ]; then
+			SetAvgPerf
+			for NumSubTest in `seq 1 $NumPerfTest`
+			do
+				touch $OutTmpFile
+				[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: dsk wr  $DataSize  [$InpCatFile] > [$OutTmpFile] [bs=$BlockSize]"
+				$TimeCmd /usr/bin/dd if=$InpCatFile of=$OutTmpFile bs=1GB count=`echo $DataSize | sed -e "s/KB//; s/MB//; s/GB//"` |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+				ListRunPerf "$OutTmpFile" "RAN[$NumSubTest/$NumPerfTest]: dsk wr  $DataSize"
+				rm -f $OutTmpFile
+			done
+			ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: dsk wr  $DataSize"
+			echo
+		fi
+ 		if [ "$RunDskMixTest" ]; then		
+			SetAvgPerf
+			for NumSubTest in `seq 1 $NumPerfTest`
+			do
+				touch $OutTmpFile
+				[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: dsk r+w $DataSize  [$OutDirFile] > [$OutTmpFile] [bs=$BlockSize]"
+				$TimeCmd /usr/bin/dd if=$OutDirFile of=$OutTmpFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+				ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: dsk r+w $DataSize"
+				rm -f $OutTmpFile
+			done
+			ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: dsk r+w $DataSize"
+			echo
+		fi
+	fi
+
+	if [ "$RunWebTest" ]; then
+		if [ "$RunWebCatTest" ]; then
+			SetAvgPerf
+			for NumSubTest in `seq 1 $NumPerfTest`
+			do
+				#RunPerfWebTest
+				[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: web cat $DataSize  [$InpUrlFile] > [$OutCatFile]"
+				$TimeCmd curl -o $OutCatFile $InpUrlFile |& sed -e "s/RAN=/RAN: /" |& egrep -v "Xfer|Dload" > $RunFile
+				ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: web cat $DataSize"
+			done
+			ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: web cat $DataSize"
+			echo
+		fi
+		if [ "$RunWebGetTest" ]; then
+			SetAvgPerf
+			for NumSubTest in `seq 1 $NumPerfTest`
+			do
+				#RunPerfWebTest
+				[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: web get $DataSize  [$InpUrlFile] > [$OutDirFile]"
+				$TimeCmd curl -o $OutDirFile $InpUrlFile |& sed -e "s/RAN=/RAN: /" |& egrep -v "Xfer|Dload" > $RunFile
+				ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: web get $DataSize"
+			done
+			ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: web get $DataSize"
+			echo
+		fi
+	fi
+
+	if [ "$RunNfsTcpTest" ]; then
+		if [ "$RunNfsTcpTest" ]; then
+			echo -n "NFS TCP: "
+			egrep "$NfsTcpMountPoint .*nfs" /etc/fstab | egrep -v "^#" | sed -e "s#  \+# #g; s# #,#g" | cut -d , -f 1,2,3,5,6,8 | sed -e "s#,#  #g"
+			echo
+		fi
+
+		RunPerfTest "$NumSubTest" "nfs tcp" "$NfsTcpInpDir$DataFile" "$RunNfsTcpCatTest" "$RunNfsTcpGetTest" "$RunNfsTcpPutTest" "$RunNfsTcpMixTest"
+	fi
+
+	if [ "$RunNfsUdpTest" ]; then
+		if [ "$RunNfsUdpTest" ]; then
+			echo -n "NFS UDP: "
+			egrep "$NfsUdpMountPoint .*udp" /etc/fstab | egrep -v "^#" | sed -e "s#  \+# #g; s# #,#g" | cut -d , -f 1,2,3,5,6,8 | sed -e "s#,#  #g"
+			echo
+		fi
+
+		RunPerfTest "$NumSubTest" "nfs udp" "$NfsUdpInpDir$DataFile" "$RunNfsUdpCatTest" "$RunNfsUdpGetTest" "$RunNfsUdpPutTest" "$RunNfsUdpMixTest"
+	fi
+
+	if [ "$RunCifsTest" ]; then
+		if [ "$RunCifsTest" ]; then
+			echo -n "CIFS: "
+			egrep "$CifsMountPoint .*cifs" /etc/fstab | sed -e "s#  \+# #g; s# #  #g; s/username=[^\s,$]*//; s/password=[^\s,$]*//; s/[,]*$//"
+			echo
+		fi
+
+		RunPerfTest "$NumSubTest" "cifs" "$CifsInpDir$DataFile" "$RunCifsCatTest" "$RunCifsGetTest" "$RunCifsPutTest" "$RunCifsMixTest"
+	fi
+
+	[ "$Verbose" ] && printf "END: %s\n" "`uptime`"
+}
+
+RunPerfTest()
+{
+	NumSubTest="$1"
+	FsType="$2"
+	InpDirFile="$3"
+	RunCatTest="$4"
+	RunGetTest="$5"
+	RunPutTest="$6"
+	RunMixTest="$7"
+
+	if [ "$RunCatTest" ]; then
+		SetAvgPerf
+		for NumSubTest in `seq 1 $NumPerfTest`
+		do
+			#RunPerfSubTest
+			[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType cat $DataSize  [$InpDirFile] > [$OutCatFile] [bs=$BlockSize]"
+			$TimeCmd /usr/bin/dd if=$InpDirFile of=$OutCatFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+			ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType cat $DataSize"
+		done
+		ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: $FsType cat $DataSize"
+		echo
+	fi
+	if [ "$RunGetTest" ]; then		
+		SetAvgPerf
+		for NumSubTest in `seq 1 $NumPerfTest`
+		do
+			#RunPerfSubTest		
+			[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType get $DataSize  [$InpDirFile] > [$OutDirFile] [bs=$BlockSize]"
+			$TimeCmd /usr/bin/dd if=$InpDirFile of=$OutDirFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+			ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType get $DataSize"
+		done
+		ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: $FsType get $DataSize"
+		echo
+	fi	
+	if [ "$RunPutTest" ]; then
+		SetAvgPerf
+		for NumSubTest in `seq 1 $NumPerfTest`
+		do
+			#RunPerfSubTest
+			[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType put $DataSize  [$OutDirFile] > [$InpDirFile] [bs=$BlockSize]"
+			$TimeCmd /usr/bin/dd if=$OutDirFile of=$InpDirFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+			ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType put $DataSize"
+		done
+		ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: $FsType put $DataSize"
+		echo
+	fi
+	if [ "$RunMixTest" ]; then
+		SetAvgPerf
+		for NumSubTest in `seq 1 $NumPerfTest`
+		do
+			OutTmpFile="`dirname $InpDirFile`/$DiskFile"
+
+			#RunPerfSubTest
+			[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType r+w $DataSize  [$InpDirFile] > [$OutTmpFile] [bs=$BlockSize]"
+			$TimeCmd /usr/bin/dd if=$InpDirFile of=$OutTmpFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+			ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType r+w $DataSize"
+
+			rm -f $OutTmpFile
+		done
+		ListAvgPerf $NumPerfTest "AVG[$NumSubTest/$NumPerfTest]: $FsType r+w $DataSize"
+		echo
+	fi
+}
+
+RunPerfSubTest()
+{
+#FIXME
+	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType cat $DataSize  [$InpDirFile] > [$OutCatFile] [bs=$BlockSize]"
+	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType get $DataSize  [$InpDirFile] > [$OutDirFile] [bs=$BlockSize]"
+	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType put $DataSize  [$OutDirFile] > [$InpDirFile] [bs=$BlockSize]"
+	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType cat $DataSize  [$InpDirFile] > [$OutCatFile] [bs=$BlockSize]"
+
+	$TimeCmd /usr/bin/dd if=$InpDirFile of=$OutCatFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+	$TimeCmd /usr/bin/dd if=$InpDirFile of=$OutDirFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+	$TimeCmd /usr/bin/dd if=$OutDirFile of=$InpDirFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+	$TimeCmd /usr/bin/dd if=$InpDirFile of=$OutCatFile bs=$BlockSize |& sed -e "s/RAN=/RAN: /" |& egrep -v " records " > $RunFile
+
+	ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType cat $DataSize"
+	ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType get $DataSize"
+	ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType put $DataSize"
+	ListRunPerf "$InpDirFile" "RAN[$NumSubTest/$NumPerfTest]: $FsType cat $DataSize"
+}
+
+RunPerfWebTest()
+{
+#FIXME
+	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: web cat $DataSize  [$InpUrlFile] > [$OutCatFile]"
+	$TimeCmd curl -o $OutCatFile $InpUrlFile |& sed -e "s/RAN=/RAN: /" |& egrep -v "Xfer|Dload" > $RunFile
+	ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: web cat $DataSize"
+
+	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: web get $DataSize  [$InpUrlFile] > [$OutDirFile]"
+	$TimeCmd curl -o $OutDirFile $InpUrlFile |& sed -e "s/RAN=/RAN: /" |& egrep -v "Xfer|Dload" > $RunFile
+	ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: web get $DataSize"
+}
+
+ListRunPerf()
+{
+	InpRunFile="$1"
+	PrefixText="$2"
+	PadNewLine="$3"
+
+	[ ! -e "$InpRunFile" ] && ExitWithoutHelp "Error: $InpRunFile - file not found."
+
+	RunSecs=`egrep RAN: $RunFile | cut -d " " -f 2 | tr -d "s"`
+	NumByte=`stat --format=%s $InpRunFile`
+	Thruput=`echo "scale=2; ($NumByte/$RunSecs)/1048576" | bc -l`
+	Thruput=`printf "%0.f" "$Thruput"`
+
+	printf "%s  I/O: %6ss @ %5s MB/s\n" "$PrefixText" "$RunSecs" "$Thruput"
+	[ "$PadNewLine" ] && echo
+
+	TotalRunSecs=`echo "scale=2; ($TotalRunSecs + $RunSecs)" | bc -l`
+	TotalThruput=`expr $TotalThruput + $Thruput`
+
+	rm -f $RunFile
+}
+
+SetAvgPerf()
+{
+	TotalRunSecs=0
+	TotalThruput=0
+}
+
+ListAvgPerf()
+{
+	RanSubTest="$1"
+	PrefixText="$2"
+
+	if [ $NumPerfTest -gt 1 ]; then
+		AvgRunSecs=`echo "scale=2; ($TotalRunSecs/$RanSubTest)" | bc -l`
+		AvgRunSecs=`printf "%0.2fs" "$AvgRunSecs"`
+		AvgThruput=`echo "scale=2; ($TotalThruput/$RanSubTest)" | bc -l`
+		AvgThruput=`printf "%0.f" "$AvgThruput"`
+
+		printf "%s  I/O: %7s @ %5s MB/s\n" "$PrefixText" "$AvgRunSecs" "$AvgThruput"
+	fi
+}
+
+# Parse the command line options
+if [ -z "$1" ]; then
+	Help
+fi
+
+while [ -n "$1" ]; do
+	case $1 in
+		-a) UserPerfTestList="all";
+			shift 1;;
+		-b) shift 1; UserBlockSize=`echo "$1" | tr a-z A-Z`;
+			shift 1;;
+		-c) CleanupTestFiles=1;
+			shift 1;;
+		-e) EditCfgFile=1;
+			shift 1;;
+		-G) GetSettings=1;
+			shift 1;;
+		-l) ListCfgFile=1;
+			shift 1;;
+		-n) shift 1; NumPerfTest="$1"
+			shift 1;;
+		-R) ResetSettings=1;
+			shift 1;;
+		-S) SetSettings=1;
+			shift 1;;
+		-s) shift 1; UserDataSize="$1";
+			shift 1;;
+		-t) shift 1; UserPerfTestList="$UserPerfTestList $1";
+			shift 1;;
+		-v) shift 1; Verbose=1;
+			;;
+		--) shift;
+			break;;
+		-h) Help
+			;;
+		-*) ExitWithHelp "Error: $1 - no such option."
+			;;
+		*)  break;;
+	esac
+done
+
+if [ "$EditCfgFile" ]; then
+	[ -e "$CfgFile" ] && $EDITOR $CfgFile
+
+	exit 0
+fi
+
+if [ -e "$CfgFile" ]; then
+	source "$CfgFile"
+
+	# make sure there is a / on the end of each dir
+	OutDir=`echo "$OutDir/" | sed -e "s#//#/#g"`
+	[ ! -d "$OutDir" ] && ExitWithoutHelp "Error: OutDir=$OutDir - dir not found. Edit \$ $ScriptName -e" 1
+	
+	if [ "$NfsTcpBaseDir" ]; then
+		NfsTcpBaseDir=`echo "$NfsTcpBaseDir/" | sed -e "s#//#/#g"`
+		
+		[ ! -d "$NfsTcpBaseDir" ] && ExitWithoutHelp "Error: NfsTcpBaseDir=$NfsTcpBaseDir - dir not found. Edit \$ $ScriptName -e" 1
+	fi
+	if [ "$NfsUdpBaseDir" ]; then
+		NfsUdpBaseDir=`echo "$NfsUdpBaseDir/" | sed -e "s#//#/#g"`
+		
+		[ ! -d "$NfsUdpBaseDir" ] && ExitWithoutHelp "Error: NfsUdpBaseDir=$NfsUdpBaseDir - dir not found. Edit \$ $ScriptName -e" 1
+	fi
+	if [ "$CifsBaseDir" ]; then
+		CifsBaseDir=`echo "$CifsBaseDir/" | sed -e "s#//#/#g"`
+		
+		[ ! -d "$CifsBaseDir" ] && ExitWithoutHelp "Error: CifsBaseDir=$CifsBaseDir - dir not found. Edit \$ $ScriptName -e" 1
+	fi
+
+	[ "$InpUrl" ] && InpUrl=`echo "$InpUrl/" | sed -e 's#//$#/#'`
+
+	[ "$UserBlockSize" ] && BlockSize=$UserBlockSize
+	[ "$UserDataSize" ] && DataSize=$UserDataSize
+	DataSize=`echo $DataSize | tr a-z A-Z | sed -e 's/G$/GB/; s/M$/MB/; s/K$/KB/'`
+
+	[ "$Verbose" ] && ListCfgFile
+
+	if echo $DataSize | egrep -qvi "(KB|MB|GB)"; then
+		ExitWithoutHelp "Error: -s $DataSize - invalid format NNN[KMG]B. Edit \$ $ScriptName -e" 1
+	fi
+else
+	CreateCfgFile
+
+	ListCfgFile
+	
+	exit 0
+fi
+
+#FIXME  TEST IF AVAILABLE!
+#dd
+#ethtool
+#lscpu
+#smartctl
+#fallocate
+
+[ "$UserPerfTestList" ] && PerfTestList=`echo "$UserPerfTestList" | tr A-Z a-z`;
+
+if [ "$ListCfgFile" ]; then
+	ListCfgFile
+
+	exit 0
+fi
+
+if [ "$CleanupTestFiles" ]; then
+	[ "$Verbose" ] && echo "RUN: cleanup test files"
+	find "$OutDir" -maxdepth 1 -print | egrep "${ScriptName}_.*.data" | xargs /bin/rm -f
+fi
+
+if [ "$ResetSettings" ]; then
+	ResetSettings
+
+	exit 0
+fi
+
+if [ "$GetSettings" ]; then
+	GetSettings
+fi
+
+if [ "$SetSettings" ]; then
+	SetSettings
+fi
+
+if [ "$PerfTestList" ]; then
+	RunPerfTestHarness
+fi
+
+exit 0
