@@ -1,8 +1,6 @@
 # tune10gb
 Tune and benchmark network filesystem (NFS/CIFS/Web) performance of linux client network stack transfering large files to a 10Gb NAS (Network Attached Storage) server.
-+
-....
-Usage: tune10gb [options]
++ Usage: tune10gb [options]
        test:
        -a       run all performance tests (all=dsk+web+nfs+cifs)
        -t type  run performance test type(s) from perf typelist
@@ -36,6 +34,5 @@ Examples:
 $ tune10gb -a -s 20G
 
 $ tune10gb -t nfstcp -t cifs -n 5
-....
-+
++ 
 
