@@ -1,5 +1,5 @@
 # tune10gb
-Tune and benchmark network filesystem (NFS/CIFS/Web) performance of linux client network stack transfering large files to a 10Gb NAS (Network Attached Storage) server.
+Tune and benchmark network filesystem (NFS/CIFS/Web) performance of linux client network stack transfering large files to and from a 10Gb NAS (Network Attached Storage) server.
 ```
 Usage: tune10gb [options]
        test:
