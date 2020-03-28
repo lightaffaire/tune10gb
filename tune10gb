@@ -49,6 +49,8 @@
 #
 #
 # Changelog:
+# 2.10 2020.03.28
+# - fixed parsing of $InpUrl by removing http:// fixup 
 # 2.00 2020.03.26
 # - added auto-discovery of config variables and write to ~/.$ScriptName file
 # 1.90 2020.03.22
@@ -125,7 +127,7 @@ else
 	. "$FuncLibFile"
 fi
 
-ScriptVersion="v2.00"
+ScriptVersion="v2.10"
 #
 CfgFile="$HOME/.$ScriptName"
 InterfaceListFile="$TmpDir/$ScriptName.interfacelist.$$"
@@ -260,7 +262,6 @@ CreateCfgFile()
 	NumPartName=`cat $PartNameListFile | wc -l`
 	[ $NumPartName -eq 1 ] && PartName=`cat $PartNameListFile | cut -d : -f 1`
 	#
-	#InpUrl="http://filer.home.lightaffaire.com/"
 	InpUrl="http://www.yoursite.com/"
 	#
 	OutDir="/"
@@ -940,7 +941,7 @@ RunPerfTest()
 
 RunPerfSubTest()
 {
-#FIXME
+	#FIXME  FINISH
 	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType cat $DataSize  [$InpDirFile] > [$OutCatFile] [bs=$BlockSize]"
 	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType get $DataSize  [$InpDirFile] > [$OutDirFile] [bs=$BlockSize]"
 	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: $FsType put $DataSize  [$OutDirFile] > [$InpDirFile] [bs=$BlockSize]"
@@ -959,7 +960,7 @@ RunPerfSubTest()
 
 RunPerfWebTest()
 {
-#FIXME
+	#FIXME  FINISH
 	[ $NumSubTest -eq 1 ] && echo "RUN[$NumPerfTest/$NumPerfTest]: web cat $DataSize  [$InpUrlFile] > [$OutCatFile]"
 	$TimeCmd curl -o $OutCatFile $InpUrlFile |& sed -e "s/RAN=/RAN: /" |& egrep -v "Xfer|Dload" > $RunFile
 	ListRunPerf "$OutDirFile" "RAN[$NumSubTest/$NumPerfTest]: web cat $DataSize"
