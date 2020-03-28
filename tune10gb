@@ -575,7 +575,7 @@ RunPerfTestHarness()
 	NfsTcpInpDir="$NfsTcpMountPoint$NfsTcpBaseDir"
 	NfsUdpInpDir="$NfsUdpMountPoint$NfsUdpBaseDir"
 	CifsInpDir="$CifsMountPoint$CifsBaseDir"
-	InpUrlFile=`echo "${InpUrl}$DataFile" | sed -e "s#^http:##; s#^[/]+##; s#^#http://#"`
+	InpUrlFile="${InpUrl}$DataFile"
 	OutDirFile="$OutDir$DataFile"
 	OutTmpFile="$OutDir$DiskFile"
 	#
